@@ -5,7 +5,11 @@ import sys
 
 REDACTED = "<redacted>"
 SENSITIVE_KEY = re.compile(
-    r"(?:^|[_-])(password|passwd|token|api[_-]?key|secret|private[_-]?key|client[_-]?secret|credential|access[_-]?key|refresh[_-]?token)(?:$|[_-])",
+    r"(?:^|[_-])(passwords?|passwd|tokens?|api[_-]?keys?|secrets?|private[_-]?keys?|client[_-]?secrets?|credentials?|access[_-]?keys?|refresh[_-]?tokens?)(?:$|[_-])",
+    re.IGNORECASE,
+)
+SENSITIVE_VALUE = re.compile(
+    r"(?:^|\b)(?:password|passwd|token|api[_-]?key|secret|private[_-]?key|client[_-]?secret|credential|access[_-]?key|refresh[_-]?token)\s*[:=]\s*\S+",
     re.IGNORECASE,
 )
 
@@ -16,11 +20,19 @@ def schema_is_password(schema):
     return False
 
 
+def is_empty_value(value):
+    return value == "" or value == [] or value == {}
+
+
 def is_sensitive_key(key, value):
     # Keep non-secret control flags such as check_for_secrets: true visible.
-    if isinstance(value, (bool, int, float)) or value is None:
+    if isinstance(value, (bool, int, float)) or value is None or is_empty_value(value):
         return False
     return bool(SENSITIVE_KEY.search(str(key)))
+
+
+def string_looks_sensitive(value):
+    return isinstance(value, str) and bool(SENSITIVE_VALUE.search(value))
 
 
 def sanitize(value, schema=None, key=None):
@@ -42,6 +54,9 @@ def sanitize(value, schema=None, key=None):
         if isinstance(schema, list) and schema:
             item_schema = schema[0]
         return [sanitize(item, item_schema) for item in value]
+
+    if string_looks_sensitive(value):
+        return REDACTED
 
     return value
 
