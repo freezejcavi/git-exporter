@@ -45,7 +45,7 @@ function setup_git {
         git config user.email "${commiter_mail:-git.exporter@home-assistant}"
     fi
 
-    #Reset secrets if existing
+    # Reset secrets if existing
     git config --unset-all 'secrets.allowed' || true
     git config --unset-all 'secrets.patterns' || true
     git config --unset-all 'secrets.providers' || true
@@ -159,12 +159,12 @@ function export_addons {
     for addon in $installed_addons; do
         if [ "$(bashio::addons.installed "${addon}")" == 'true' ]; then
             bashio::log.info "Get ${addon} configs"
-            bashio::addon.options "$addon" >  /tmp/tmp.json
+            bashio::addon.options "$addon" > /tmp/tmp.json
             /utils/jsonToYaml.py /tmp/tmp.json
             mv /tmp/tmp.yaml "/tmp/addons/${addon}.yaml"
         fi
     done
-    bashio::log.info "Get addon repositories"
+    bashio::log.info 'Get addon repositories'
     bashio::api.supervisor GET "/store/repositories" false \
       | jq '. | map(select(.source != null and .source != "core" and .source != "local")) | map({(.name): {source,maintainer,slug}}) | add' > /tmp/tmp.json
     /utils/jsonToYaml.py /tmp/tmp.json
@@ -173,12 +173,25 @@ function export_addons {
     chmod 644 -R ${local_repository}/addons
 }
 
+function find_node_red_dir {
+    find /addon_configs -mindepth 1 -maxdepth 1 -type d -name '*_nodered' -print -quit 2>/dev/null
+}
+
 function export_node-red {
-    bashio::log.info 'Get Node-RED flows'
+    local node_red_dir
+    node_red_dir="$(find_node_red_dir)"
+
+    if [ -z "$node_red_dir" ]; then
+        bashio::log.warning 'Node-RED app config directory not found under /addon_configs'
+        return 0
+    fi
+
+    bashio::log.info "Get Node-RED flows from ${node_red_dir}"
+    mkdir -p "${local_repository}/node-red"
     rsync -archive --compress --delete --checksum --prune-empty-dirs -q \
           --exclude='flows_cred.json' --exclude='*.backup' --include='flows.json' --include='settings.js' --exclude='*' \
-        /config/node-red/ ${local_repository}/node-red
-    chmod 644 -R ${local_repository}/node-red
+        "${node_red_dir}/" "${local_repository}/node-red/"
+    chmod 644 -R "${local_repository}/node-red"
 }
 
 bashio::log.info 'Start git export'
@@ -199,7 +212,7 @@ if [ "$(bashio::config 'export.addons')" == 'true' ]; then
     export_addons
 fi
 
-if [ "$(bashio::config 'export.node_red')" == 'true' ] && [ -d '/config/node-red' ]; then
+if [ "$(bashio::config 'export.node_red')" == 'true' ]; then
     export_node-red
 fi
 
@@ -207,18 +220,21 @@ if [ "$(bashio::config 'check.enabled')" == 'true' ]; then
     check_secrets
 fi
 
-
 if [ "$(bashio::config 'dry_run')" == 'true' ]; then
     git status
 else
     bashio::log.info 'Commit changes and push to remote'
     git add .
-    git commit -m "$(bashio::config 'repository.commit_message')"
-
-    if [ ! "$pull_before_push" == 'true' ]; then
-        git push --set-upstream origin "$branch" -f
+    if git diff --cached --quiet; then
+        bashio::log.info 'No changes to commit'
     else
-        git push origin
+        git commit -m "$(bashio::config 'repository.commit_message')"
+
+        if [ ! "$pull_before_push" == 'true' ]; then
+            git push --set-upstream origin "$branch" -f
+        else
+            git push origin
+        fi
     fi
 fi
 
