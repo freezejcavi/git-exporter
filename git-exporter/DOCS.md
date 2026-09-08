@@ -13,6 +13,7 @@ export:
   addons: true
   esphome: true
   node_red: true
+include: []
 checks:
   enabled: true
   check_for_secrets: true
@@ -81,6 +82,43 @@ Enable / Disable the export for the esphome config.
 
 Enable / Disable the export for the Node-RED flows.
 Secure your credentials with [node-red-contrib-credentials](https://flows.nodered.org/node/node-red-contrib-credentials).
+
+### `include`
+
+Optional list of additional files or directories to export. This is useful for data that is intentionally excluded from the normal Home Assistant config export, or for selected app configuration under `/addon_configs`.
+
+Allowed source roots are:
+
+* `/config`
+* `/addon_configs`
+
+Shell glob patterns are supported. Included files are copied to the `include/` directory in the target repository while preserving their source root and relative path.
+
+Example:
+
+```yaml
+include:
+  - /config/.storage/core.entity_registry
+  - /config/.storage/core.device_registry
+  - /config/.storage/core.area_registry
+  - /addon_configs/*_nodered/flows.json
+  - /addon_configs/*_nodered/settings.js
+```
+
+The example above produces paths such as:
+
+```text
+include/config/.storage/core.entity_registry
+include/addon_configs/<app-slug>_nodered/flows.json
+```
+
+The normal `exclude` patterns also apply to selectively included files and directories.
+
+For safety, some known sensitive files are always blocked from `include`, including `secrets.yaml`, Node-RED `flows_cred.json`, Home Assistant authentication data, `core.config_entries`, application credentials, private keys and similar credential files. Parent-directory traversal and source paths outside the two allowed roots are rejected.
+
+All selectively included files are added to the secret scan when checks are enabled, including files without a `.yaml` or `.json` extension.
+
+> **Security note:** `include` is intentionally an advanced, opt-in feature. Prefer explicit reviewed files over broad directory patterns, especially when exporting to a public repository. App configuration directories may contain credentials even when the file name does not make that obvious.
 
 
 ### `checks.enabled`
