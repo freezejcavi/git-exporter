@@ -14,7 +14,7 @@ export:
   esphome: true
   node_red: true
 include: []
-checks:
+check:
   enabled: true
   check_for_secrets: true
   check_for_ips: true
@@ -65,14 +65,23 @@ The working branch for the repository.
 
 Use this to disable the ssl verification. Can be used for self-signed certificates. __Use this only when you know what you are doing__
 
-
 ### `export.lovelace`
 
 Enable / Disable the export for the lovelace config.
 
 ### `export.addons`
 
-Enable / Disable the export for the supervisor addons config.
+Enable / Disable export of installed Home Assistant App configuration.
+
+For each installed App, the exporter reads the Supervisor App info endpoint and writes a sanitized file to:
+
+```text
+addons/<app-slug>.yaml
+```
+
+The exported file contains useful metadata and the App `options` shown in the Home Assistant App configuration UI. Password-schema fields and common credential/token/secret fields are replaced with `<redacted>` before they are written to the Git repository.
+
+`addons/repositories.yaml` is exported as before.
 
 ### `export.esphome`
 
@@ -85,14 +94,24 @@ Secure your credentials with [node-red-contrib-credentials](https://flows.nodere
 
 ### `include`
 
-Optional list of additional files or directories to export. This is useful for data that is intentionally excluded from the normal Home Assistant config export, or for selected app configuration under `/addon_configs`.
+Optional list of additional files or directories to export. This is useful for data that is intentionally excluded from the normal Home Assistant config export, or for selected App configuration under `/addon_configs`.
 
 Allowed source roots are:
 
 * `/config`
 * `/addon_configs`
 
-Shell glob patterns are supported. Included files are copied to the `include/` directory in the target repository while preserving their source root and relative path.
+Shell glob patterns are supported. Paths must be absolute and start with one of the allowed roots.
+
+Included files keep the same topology as the Home Assistant filesystem:
+
+```text
+/config/.storage/core.entity_registry
+→ config/.storage/core.entity_registry
+
+/addon_configs/a0d7b954_nodered/flows.json
+→ addon_configs/a0d7b954_nodered/flows.json
+```
 
 Example:
 
@@ -101,42 +120,59 @@ include:
   - /config/.storage/core.entity_registry
   - /config/.storage/core.device_registry
   - /config/.storage/core.area_registry
+  - /config/.storage/core.floor_registry
+  - /config/.storage/core.label_registry
   - /addon_configs/*_nodered/flows.json
   - /addon_configs/*_nodered/settings.js
 ```
 
-The example above produces paths such as:
+A useful selective Codex example is:
 
-```text
-include/config/.storage/core.entity_registry
-include/addon_configs/<app-slug>_nodered/flows.json
+```yaml
+exclude:
+  - codex_tasks/
+
+include:
+  - /config/codex_tasks/*/task.json
 ```
 
-The normal `exclude` patterns also apply to selectively included files and directories.
+This keeps the large Codex task directory excluded from the normal config mirror while explicitly restoring only each `task.json` into:
 
-For safety, some known sensitive files are always blocked from `include`, including `secrets.yaml`, Node-RED `flows_cred.json`, Home Assistant authentication data, `core.config_entries`, application credentials, private keys and similar credential files. Parent-directory traversal and source paths outside the two allowed roots are rejected.
+```text
+config/codex_tasks/<task-id>/task.json
+```
 
-All selectively included files are added to the secret scan when checks are enabled, including files without a `.yaml` or `.json` extension.
+#### Include / exclude precedence
+
+Rules are applied in this order:
+
+1. hard security blocks
+2. normal export with user `exclude` rules
+3. explicit `include` rules
+
+Therefore an explicit `include` overrides a normal user `exclude`. Hard security blocks always win and cannot be overridden.
+
+For safety, known sensitive files are always blocked from `include`, including `secrets.yaml`, Node-RED `flows_cred.json`, Home Assistant authentication data, `core.config_entries`, application credentials, private keys and similar credential files. Parent-directory traversal and source paths outside the two allowed roots are rejected.
+
+All selectively included files are added to the secret scan when checks are enabled, including files without a `.yaml` or `.json` extension such as Home Assistant registries.
 
 > **Security note:** `include` is intentionally an advanced, opt-in feature. Prefer explicit reviewed files over broad directory patterns, especially when exporting to a public repository. App configuration directories may contain credentials even when the file name does not make that obvious.
 
-
-### `checks.enabled`
+### `check.enabled`
 
 Enable / Disable the checks in the exported files.
 
-### `checks.check_for_secrets`
+### `check.check_for_secrets`
 
 Add your secret values to the check.
 
-### `checks.check_for_ips`
+### `check.check_for_ips`
 
 Add pattern for ip and mac addresses to the search.
 
-
 ### `exclude`
 
-The files / folders which should be excluded from the config export.
+The files / folders which should be excluded from the normal Home Assistant config export.
 
 Following folders and files are excluded from the sync per default:
 
@@ -144,25 +180,24 @@ Following folders and files are excluded from the sync per default:
 * `.cloud`
 * `.storage`
 
+An explicit `include` may restore a normally excluded file, unless that file is covered by a hard security block.
+
 ### `secrets`
 
 Additional secrets which will be checked for.
-
 
 ### `allowed_secrets`
 
 Additional allowed secrets which will not make the secret check fail.
 
-
 ### `dry_run`
 
 Only show the changes and don't commit or push.
 
-
 ## Known limitations
 
-`check_for_secrets` Uses a git plugin that does pattern matching using regexes.
+`check_for_secrets` uses a git plugin that does pattern matching using regexes.
 A limitation of this plugin is that using brackets (like `[`, `]`, `{`, `}` `(` and `)`) in secrets can result in unexpected behaviour and crashes.
 
-If the addon fails during secrets checking with errors originating from grep (I.E. `grep: Unmatched [, [^, [:, [., or [=`),
+If the app fails during secrets checking with errors originating from grep (I.E. `grep: Unmatched [, [^, [:, [., or [=`),
 change the passwords that contain brackets or set `check_for_secrets` to `false`.
