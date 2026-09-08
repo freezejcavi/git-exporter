@@ -6,6 +6,7 @@ export LD_PRELOAD="/usr/local/lib/libjemalloc.so.2"
 
 local_repository='/data/repository'
 pull_before_push="$(bashio::config 'repository.pull_before_push')"
+included_files_manifest='/tmp/git-exporter-included-files'
 
 function setup_git {
     repository=$(bashio::config 'repository.url')
@@ -15,15 +16,15 @@ function setup_git {
     branch=$(bashio::config 'repository.branch_name')
     ssl_verify=$(bashio::config 'repository.ssl_verification')
 
-    if [[ "$password" != "ghp_*" ]]  && [[ "$password" != "github_pat_*" ]]; then
+    if [[ "$password" != "ghp_*" ]] && [[ "$password" != "github_pat_*" ]]; then
         password=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${password}'))")
     fi
 
-    if [ ! -d $local_repository ]; then
+    if [ ! -d "$local_repository" ]; then
         bashio::log.info 'Create local repository'
-        mkdir -p $local_repository
+        mkdir -p "$local_repository"
     fi
-    cd $local_repository
+    cd "$local_repository"
 
     if [ "${ssl_verify:-true}" == 'false' ]; then
         bashio::log.info 'Disabling SSL verification for git repositories'
@@ -34,11 +35,11 @@ function setup_git {
         fullurl="https://${username}:${password}@${repository##*https://}"
         if [ "$pull_before_push" == 'true' ]; then
             bashio::log.info 'Clone existing repository'
-            git clone "$fullurl" $local_repository
+            git clone "$fullurl" "$local_repository"
             git checkout "$branch"
         else
             bashio::log.info 'Initialize new repository'
-            git init $local_repository
+            git init "$local_repository"
             git remote add origin "$fullurl"
         fi
         git config user.name "${username}"
@@ -66,15 +67,15 @@ function check_secrets {
     git secrets --add -a '!secret'
 
     # Set prohibited patterns
-    git secrets --add "password:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "token:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "client_id:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "api_key:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "chat_id:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "allowed_chat_ids:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "latitude:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "longitude:\s?[\'\"]?\w+[\'\"]?\n?"
-    git secrets --add "credential_secret:\s?[\'\"]?\w+[\'\"]?\n?"
+    git secrets --add "password:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "token:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "client_id:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "api_key:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "chat_id:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "allowed_chat_ids:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "latitude:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "longitude:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
+    git secrets --add "credential_secret:\\s?[\\'\\\"]?\\w+[\\'\\\"]?\\n?"
 
     if [ "$(bashio::config 'check.check_for_secrets')" == 'true' ]; then
         git secrets --add-provider -- sed '/^$/d;/^#.*/d;/^&/d;s/^.*://g;s/\s//g' /config/secrets.yaml
@@ -117,8 +118,8 @@ function check_secrets {
     mapfile -t scan_files < <(
         {
             find "$local_repository" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.disabled' \)
-            if [ -d "${local_repository}/include" ]; then
-                find "${local_repository}/include" -type f
+            if [ -f "$included_files_manifest" ]; then
+                cat "$included_files_manifest"
             fi
         } | sort -u
     )
@@ -140,9 +141,9 @@ function export_ha_config {
     exclude_args=$(printf -- '--exclude=%s ' ${excludes[@]})
     # Keep this managed tree authoritative: removed or newly excluded files must disappear from the mirror.
     # shellcheck disable=SC2086
-    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q --include='.gitignore' $exclude_args /config ${local_repository}
-    sed 's/:.*$/: ""/g' /config/secrets.yaml > ${local_repository}/config/secrets.yaml
-    chmod 644 -R ${local_repository}/config
+    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q --include='.gitignore' $exclude_args /config "${local_repository}"
+    sed 's/:.*$/: ""/g' /config/secrets.yaml > "${local_repository}/config/secrets.yaml"
+    chmod 644 -R "${local_repository}/config"
 }
 
 function export_lovelace {
@@ -160,31 +161,50 @@ function export_esphome {
     bashio::log.info 'Get ESPHome configs'
     rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q \
          --exclude='.esphome*' --include='*/' --include='.gitignore' --include='*.yaml' --include='*.disabled' --exclude='secrets.yaml' --exclude='*' \
-        /config/esphome ${local_repository}
-    [ -f /config/esphome/secrets.yaml ] && sed 's/:.*$/: ""/g' /config/esphome/secrets.yaml > ${local_repository}/esphome/secrets.yaml
-    chmod 644 -R ${local_repository}/esphome
+        /config/esphome "${local_repository}"
+    [ -f /config/esphome/secrets.yaml ] && sed 's/:.*$/: ""/g' /config/esphome/secrets.yaml > "${local_repository}/esphome/secrets.yaml"
+    chmod 644 -R "${local_repository}/esphome"
 }
 
 function export_addons {
-    [ -d ${local_repository}/addons ] || mkdir -p ${local_repository}/addons
-    installed_addons=$(bashio::addons.installed)
+    local addon info_file
+    local -a installed_addons=()
+
+    mkdir -p "${local_repository}/addons"
     rm -rf '/tmp/addons'
     mkdir -p '/tmp/addons/'
-    for addon in $installed_addons; do
-        if [ "$(bashio::addons.installed "${addon}")" == 'true' ]; then
-            bashio::log.info "Get ${addon} configs"
-            bashio::addon.options "$addon" > /tmp/tmp.json
-            /utils/jsonToYaml.py /tmp/tmp.json
-            mv /tmp/tmp.yaml "/tmp/addons/${addon}.yaml"
+
+    mapfile -t installed_addons < <(
+        bashio::api.supervisor GET "/addons" false \
+        | jq -r '.addons[]?.slug'
+    )
+
+    for addon in "${installed_addons[@]}"; do
+        [ -z "$addon" ] && continue
+        bashio::log.info "Get ${addon} config"
+
+        info_file="/tmp/addon-${addon}.json"
+        if bashio::api.supervisor GET "/addons/${addon}/info" false > "$info_file"; then
+            if python3 /utils/sanitizeAddonInfo.py < "$info_file" > /tmp/tmp.json; then
+                /utils/jsonToYaml.py /tmp/tmp.json
+                mv /tmp/tmp.yaml "/tmp/addons/${addon}.yaml"
+            else
+                bashio::log.warning "Failed to sanitize ${addon} config; skipping"
+            fi
+        else
+            bashio::log.warning "Failed to read ${addon} config; skipping"
         fi
+        rm -f "$info_file" /tmp/tmp.json /tmp/tmp.yaml
     done
+
     bashio::log.info 'Get addon repositories'
     bashio::api.supervisor GET "/store/repositories" false \
       | jq '. | map(select(.source != null and .source != "core" and .source != "local")) | map({(.name): {source,maintainer,slug}}) | add' > /tmp/tmp.json
     /utils/jsonToYaml.py /tmp/tmp.json
     mv /tmp/tmp.yaml "/tmp/addons/repositories.yaml"
-    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q /tmp/addons/ ${local_repository}/addons
-    chmod 644 -R ${local_repository}/addons
+
+    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q /tmp/addons/ "${local_repository}/addons"
+    chmod 644 -R "${local_repository}/addons"
 }
 
 function find_node_red_dir {
@@ -213,7 +233,7 @@ function include_path_is_blocked {
     local source="$1"
 
     case "$source" in
-        */secrets.yaml|*/flows_cred.json|*/.storage/auth|*/.storage/auth.*|*/.storage/auth_provider.homeassistant|*/.storage/core.config_entries|*/.storage/application_credentials|*/.storage/cloud)
+        */secrets.yaml|*/flows_cred.json|*/.storage/auth|*/.storage/auth.*|*/.storage/auth_provider.homeassistant|*/.storage/core.config_entries|*/.storage/application_credentials|*/.storage/cloud|*.pem|*.key|*/id_rsa*|*/id_ed25519*)
             return 0
             ;;
     esac
@@ -221,11 +241,20 @@ function include_path_is_blocked {
     return 1
 }
 
+function record_included_files {
+    local destination="$1"
+
+    if [ -f "$destination" ]; then
+        printf '%s\n' "$destination" >> "$included_files_manifest"
+    elif [ -d "$destination" ]; then
+        find "$destination" -type f >> "$included_files_manifest"
+    fi
+}
+
 function export_includes {
-    local include_root="${local_repository}/include"
-    local configured_excludes include_values pattern source rel destination exclude
+    local include_values pattern source rel destination
     local -a matches=()
-    local -a rsync_exclude_args=(
+    local -a hard_exclude_args=(
         '--exclude=secrets.yaml'
         '--exclude=flows_cred.json'
         '--exclude=core.config_entries'
@@ -240,7 +269,13 @@ function export_includes {
         '--exclude=id_ed25519*'
     )
 
-    rm -rf "$include_root"
+    : > "$included_files_manifest"
+
+    # fj3 stored selective files under /include. Remove that legacy tree.
+    rm -rf "${local_repository}/include"
+
+    # /addon_configs is exclusively managed by selective include, so rebuild it every run.
+    rm -rf "${local_repository}/addon_configs"
 
     include_values="$(bashio::config 'include')"
     if [ -z "$include_values" ]; then
@@ -248,12 +283,6 @@ function export_includes {
     fi
 
     bashio::log.info 'Get selectively included files'
-    mkdir -p "$include_root"
-
-    configured_excludes="$(bashio::config 'exclude')"
-    while IFS= read -r exclude; do
-        [ -n "$exclude" ] && rsync_exclude_args+=("--exclude=$exclude")
-    done <<< "$configured_excludes"
 
     while IFS= read -r pattern; do
         [ -z "$pattern" ] && continue
@@ -288,10 +317,10 @@ function export_includes {
 
             if [[ "$source" == /config/* ]]; then
                 rel="${source#/config/}"
-                destination="${include_root}/config/${rel}"
+                destination="${local_repository}/config/${rel}"
             else
                 rel="${source#/addon_configs/}"
-                destination="${include_root}/addon_configs/${rel}"
+                destination="${local_repository}/addon_configs/${rel}"
             fi
 
             mkdir -p "$(dirname "$destination")"
@@ -299,17 +328,23 @@ function export_includes {
             if [ -d "$source" ]; then
                 mkdir -p "$destination"
                 rsync -archive --compress --checksum --prune-empty-dirs -q \
-                    "${rsync_exclude_args[@]}" "$source/" "$destination/"
+                    "${hard_exclude_args[@]}" "$source/" "$destination/"
             else
                 rsync -archive --compress --checksum -q \
-                    "${rsync_exclude_args[@]}" "$source" "$destination"
+                    "${hard_exclude_args[@]}" "$source" "$destination"
             fi
+
+            record_included_files "$destination"
         done
     done <<< "$include_values"
 
-    find "$include_root" -mindepth 1 -type d -empty -delete
-    find "$include_root" -type d -exec chmod 755 {} +
-    find "$include_root" -type f -exec chmod 644 {} +
+    [ -d "${local_repository}/addon_configs" ] && find "${local_repository}/addon_configs" -mindepth 1 -type d -empty -delete
+
+    if [ -s "$included_files_manifest" ]; then
+        while IFS= read -r destination; do
+            [ -f "$destination" ] && chmod 644 "$destination"
+        done < "$included_files_manifest"
+    fi
 }
 
 bashio::log.info 'Start git export'
@@ -342,6 +377,8 @@ else
     rm -rf "${local_repository}/node-red"
 fi
 
+# Run selective includes after the normal export. Explicit includes override user exclude rules,
+# while hard security blocks remain authoritative.
 export_includes
 
 if [ "$(bashio::config 'check.enabled')" == 'true' ]; then

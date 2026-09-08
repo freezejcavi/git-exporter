@@ -11,11 +11,12 @@ Can be used to show your Home Assistant setup in public repositories.
 # Functionality
 
 * Export Home Assistant configuration.
-* Export Supervisor Addon configuration.
+* Export sanitized Home Assistant App options from Supervisor.
 * Export Lovelace configuration.
 * Export ESPHome configurations.
 * Export Node-RED flows.
-* Selectively include additional files from `/config` and `/addon_configs`.
+* Selectively include additional files from `/config` and `/addon_configs` while preserving their filesystem topology.
+* Let explicit `include` rules override normal user `exclude` rules while keeping hard security blocks authoritative.
 * Check for plaintext secrets based on your `secrets.yaml` file and common patterns.
 * Check for plaintext ip and addresses in your config.
 
