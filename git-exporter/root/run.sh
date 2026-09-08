@@ -113,9 +113,20 @@ function check_secrets {
     fi
 
     bashio::log.info 'Checking for secrets'
-    # shellcheck disable=SC2046
-    git secrets --scan $(find $local_repository -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.disabled') \
-    || (bashio::log.error 'Found secrets in files!!! Fix them to be able to commit! See https://www.home-assistant.io/docs/configuration/secrets/ for more information!' && exit 1)
+    local -a scan_files=()
+    mapfile -t scan_files < <(
+        {
+            find "$local_repository" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.disabled' \)
+            if [ -d "${local_repository}/include" ]; then
+                find "${local_repository}/include" -type f
+            fi
+        } | sort -u
+    )
+
+    if [ ${#scan_files[@]} -gt 0 ]; then
+        git secrets --scan "${scan_files[@]}" \
+        || (bashio::log.error 'Found secrets in files!!! Fix them to be able to commit! See https://www.home-assistant.io/docs/configuration/secrets/ for more information!' && exit 1)
+    fi
 }
 
 function export_ha_config {
@@ -198,6 +209,109 @@ function export_node-red {
     chmod 644 -R "${local_repository}/node-red"
 }
 
+function include_path_is_blocked {
+    local source="$1"
+
+    case "$source" in
+        */secrets.yaml|*/flows_cred.json|*/.storage/auth|*/.storage/auth.*|*/.storage/auth_provider.homeassistant|*/.storage/core.config_entries|*/.storage/application_credentials|*/.storage/cloud)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+function export_includes {
+    local include_root="${local_repository}/include"
+    local configured_excludes include_values pattern source rel destination exclude
+    local -a matches=()
+    local -a rsync_exclude_args=(
+        '--exclude=secrets.yaml'
+        '--exclude=flows_cred.json'
+        '--exclude=core.config_entries'
+        '--exclude=application_credentials'
+        '--exclude=auth'
+        '--exclude=auth.*'
+        '--exclude=auth_provider.homeassistant'
+        '--exclude=cloud'
+        '--exclude=*.pem'
+        '--exclude=*.key'
+        '--exclude=id_rsa*'
+        '--exclude=id_ed25519*'
+    )
+
+    rm -rf "$include_root"
+
+    include_values="$(bashio::config 'include')"
+    if [ -z "$include_values" ]; then
+        return 0
+    fi
+
+    bashio::log.info 'Get selectively included files'
+    mkdir -p "$include_root"
+
+    configured_excludes="$(bashio::config 'exclude')"
+    while IFS= read -r exclude; do
+        [ -n "$exclude" ] && rsync_exclude_args+=("--exclude=$exclude")
+    done <<< "$configured_excludes"
+
+    while IFS= read -r pattern; do
+        [ -z "$pattern" ] && continue
+
+        case "$pattern" in
+            /config/*|/addon_configs/*)
+                ;;
+            *)
+                bashio::log.warning "Skip include outside allowed roots (/config, /addon_configs): ${pattern}"
+                continue
+                ;;
+        esac
+
+        if [[ "$pattern" == *'/../'* || "$pattern" == */.. ]]; then
+            bashio::log.warning "Skip include containing parent traversal: ${pattern}"
+            continue
+        fi
+
+        matches=()
+        mapfile -t matches < <(compgen -G "$pattern" || true)
+
+        if [ ${#matches[@]} -eq 0 ]; then
+            bashio::log.warning "Include pattern matched nothing: ${pattern}"
+            continue
+        fi
+
+        for source in "${matches[@]}"; do
+            if include_path_is_blocked "$source"; then
+                bashio::log.warning "Skip sensitive include: ${source}"
+                continue
+            fi
+
+            if [[ "$source" == /config/* ]]; then
+                rel="${source#/config/}"
+                destination="${include_root}/config/${rel}"
+            else
+                rel="${source#/addon_configs/}"
+                destination="${include_root}/addon_configs/${rel}"
+            fi
+
+            mkdir -p "$(dirname "$destination")"
+
+            if [ -d "$source" ]; then
+                mkdir -p "$destination"
+                rsync -archive --compress --checksum --prune-empty-dirs -q \
+                    "${rsync_exclude_args[@]}" "$source/" "$destination/"
+            else
+                rsync -archive --compress --checksum -q \
+                    "${rsync_exclude_args[@]}" "$source" "$destination"
+            fi
+        done
+    done <<< "$include_values"
+
+    find "$include_root" -mindepth 1 -type d -empty -delete
+    find "$include_root" -type d -exec chmod 755 {} +
+    find "$include_root" -type f -exec chmod 644 {} +
+}
+
 bashio::log.info 'Start git export'
 
 setup_git
@@ -227,6 +341,8 @@ if [ "$(bashio::config 'export.node_red')" == 'true' ]; then
 else
     rm -rf "${local_repository}/node-red"
 fi
+
+export_includes
 
 if [ "$(bashio::config 'check.enabled')" == 'true' ]; then
     check_secrets
