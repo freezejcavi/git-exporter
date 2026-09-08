@@ -127,8 +127,9 @@ function export_ha_config {
     [ -d "${local_repository}/config/esphome" ] && rm -r "${local_repository}/config/esphome"
     # shellcheck disable=SC2068
     exclude_args=$(printf -- '--exclude=%s ' ${excludes[@]})
+    # Keep this managed tree authoritative: removed or newly excluded files must disappear from the mirror.
     # shellcheck disable=SC2086
-    rsync -archive --compress --delete --checksum --prune-empty-dirs -q --include='.gitignore' $exclude_args /config ${local_repository}
+    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q --include='.gitignore' $exclude_args /config ${local_repository}
     sed 's/:.*$/: ""/g' /config/secrets.yaml > ${local_repository}/config/secrets.yaml
     chmod 644 -R ${local_repository}/config
 }
@@ -136,16 +137,17 @@ function export_ha_config {
 function export_lovelace {
     bashio::log.info 'Get Lovelace config yaml'
     [ ! -d "${local_repository}/lovelace" ] && mkdir "${local_repository}/lovelace"
+    rm -rf '/tmp/lovelace'
     mkdir -p '/tmp/lovelace'
     find /config/.storage -name "lovelace*" -printf '%f\n' | xargs -I % cp /config/.storage/% /tmp/lovelace/%.json
     /utils/jsonToYaml.py '/tmp/lovelace/' 'data'
-    rsync -archive --compress --delete --checksum --prune-empty-dirs -q --include='*.yaml' --exclude='*' /tmp/lovelace/ "${local_repository}/lovelace"
+    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q --include='*.yaml' --exclude='*' /tmp/lovelace/ "${local_repository}/lovelace"
     chmod 644 -R "${local_repository}/lovelace"
 }
 
 function export_esphome {
     bashio::log.info 'Get ESPHome configs'
-    rsync -archive --compress --delete --checksum --prune-empty-dirs -q \
+    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q \
          --exclude='.esphome*' --include='*/' --include='.gitignore' --include='*.yaml' --include='*.disabled' --exclude='secrets.yaml' --exclude='*' \
         /config/esphome ${local_repository}
     [ -f /config/esphome/secrets.yaml ] && sed 's/:.*$/: ""/g' /config/esphome/secrets.yaml > ${local_repository}/esphome/secrets.yaml
@@ -155,7 +157,8 @@ function export_esphome {
 function export_addons {
     [ -d ${local_repository}/addons ] || mkdir -p ${local_repository}/addons
     installed_addons=$(bashio::addons.installed)
-    mkdir '/tmp/addons/'
+    rm -rf '/tmp/addons'
+    mkdir -p '/tmp/addons/'
     for addon in $installed_addons; do
         if [ "$(bashio::addons.installed "${addon}")" == 'true' ]; then
             bashio::log.info "Get ${addon} configs"
@@ -169,7 +172,7 @@ function export_addons {
       | jq '. | map(select(.source != null and .source != "core" and .source != "local")) | map({(.name): {source,maintainer,slug}}) | add' > /tmp/tmp.json
     /utils/jsonToYaml.py /tmp/tmp.json
     mv /tmp/tmp.yaml "/tmp/addons/repositories.yaml"
-    rsync -archive --compress --delete --checksum --prune-empty-dirs -q /tmp/addons/ ${local_repository}/addons
+    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q /tmp/addons/ ${local_repository}/addons
     chmod 644 -R ${local_repository}/addons
 }
 
@@ -183,12 +186,13 @@ function export_node-red {
 
     if [ -z "$node_red_dir" ]; then
         bashio::log.warning 'Node-RED app config directory not found under /addon_configs'
+        rm -rf "${local_repository}/node-red"
         return 0
     fi
 
     bashio::log.info "Get Node-RED flows from ${node_red_dir}"
     mkdir -p "${local_repository}/node-red"
-    rsync -archive --compress --delete --checksum --prune-empty-dirs -q \
+    rsync -archive --compress --delete --delete-excluded --checksum --prune-empty-dirs -q \
           --exclude='flows_cred.json' --exclude='*.backup' --include='flows.json' --include='settings.js' --exclude='*' \
         "${node_red_dir}/" "${local_repository}/node-red/"
     chmod 644 -R "${local_repository}/node-red"
@@ -202,18 +206,26 @@ export_ha_config
 
 if [ "$(bashio::config 'export.lovelace')" == 'true' ]; then
     export_lovelace
+else
+    rm -rf "${local_repository}/lovelace"
 fi
 
 if [ "$(bashio::config 'export.esphome')" == 'true' ] && [ -d '/config/esphome' ]; then
     export_esphome
+else
+    rm -rf "${local_repository}/esphome"
 fi
 
 if [ "$(bashio::config 'export.addons')" == 'true' ]; then
     export_addons
+else
+    rm -rf "${local_repository}/addons"
 fi
 
 if [ "$(bashio::config 'export.node_red')" == 'true' ]; then
     export_node-red
+else
+    rm -rf "${local_repository}/node-red"
 fi
 
 if [ "$(bashio::config 'check.enabled')" == 'true' ]; then
