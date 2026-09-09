@@ -26,6 +26,12 @@ function setup_git {
     fi
     cd "$local_repository"
 
+    # Recover from a stale Git index lock left by an interrupted previous run.
+    if [ -f '.git/index.lock' ]; then
+        bashio::log.warning 'Removing stale Git index.lock from previous interrupted run'
+        rm -f '.git/index.lock'
+    fi
+
     if [ "${ssl_verify:-true}" == 'false' ]; then
         bashio::log.info 'Disabling SSL verification for git repositories'
         git config --global http.sslVerify false
@@ -393,6 +399,8 @@ else
     if git diff --cached --quiet; then
         bashio::log.info 'No changes to commit'
     else
+        bashio::log.info 'Changed files staged for commit:'
+        git diff --cached --name-status
         git commit -m "$(bashio::config 'repository.commit_message')"
 
         if [ ! "$pull_before_push" == 'true' ]; then
